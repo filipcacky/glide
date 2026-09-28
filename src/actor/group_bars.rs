@@ -13,7 +13,8 @@ use std::sync::Arc;
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSFloatingWindowLevel, NSNormalWindowLevel, NSWindow,
+    NSAnimatablePropertyContainer, NSAnimationContext, NSBackingStoreType, NSColor,
+    NSFloatingWindowLevel, NSNormalWindowLevel, NSWindow, NSWindowCollectionBehavior,
     NSWindowStyleMask,
 };
 use objc2_core_foundation::CGRect;
@@ -45,6 +46,8 @@ pub enum Event {
     SpaceDisabled(SpaceId),
     GlobalDisabled,
     ConfigChanged(Arc<Config>),
+    Hide,
+    Show,
 }
 
 pub struct GroupBars {
@@ -54,6 +57,7 @@ pub struct GroupBars {
     indicators: HashMap<SpaceId, HashMap<NodeId, Indicator>>,
     coordinate_converter: CoordinateConverter,
     active_spaces: Vec<Option<SpaceId>>,
+    hidden: bool,
 }
 
 struct Indicator {
@@ -80,6 +84,7 @@ impl GroupBars {
             indicators: HashMap::default(),
             coordinate_converter: CoordinateConverter::default(),
             active_spaces: Vec::new(),
+            hidden: false,
         }
     }
 
@@ -124,7 +129,21 @@ impl GroupBars {
             Event::GlobalDisabled => {
                 self.indicators.clear();
             }
+            Event::Hide => self.set_hidden(true),
+            Event::Show => self.set_hidden(false),
         }
+    }
+
+    fn set_hidden(&mut self, hidden: bool) {
+        let config = &self.config.settings.group_bars;
+        self.hidden = hidden && config.fade;
+        let alpha = if self.hidden { 0.0 } else { 1.0 };
+        NSAnimationContext::beginGrouping();
+        NSAnimationContext::currentContext().setDuration(config.fade_duration);
+        for indicator in self.indicators.values().flat_map(|i| i.values()) {
+            indicator.window.animator().setAlphaValue(alpha);
+        }
+        NSAnimationContext::endGrouping();
     }
 
     fn handle_groups_updated(&mut self, space_id: SpaceId, groups: Vec<GroupBarInfo>) {
@@ -193,6 +212,9 @@ impl GroupBars {
             is_selected: group.is_selected,
         });
         indicator.window.setIsVisible(group.is_visible);
+        if self.hidden {
+            indicator.window.setAlphaValue(0.0);
+        }
         indicator.window.setLevel(if group.is_on_top {
             NSFloatingWindowLevel
         } else {
@@ -227,6 +249,8 @@ fn make_indicator_window(mtm: MainThreadMarker) -> Retained<NSWindow> {
     window.setBackgroundColor(Some(&NSColor::clearColor()));
     window.setOpaque(false);
     window.setIgnoresMouseEvents(true);
+    // Don't animate the indicator along with windows in Exposé.
+    window.setCollectionBehavior(NSWindowCollectionBehavior::Stationary);
 
     window
 }
