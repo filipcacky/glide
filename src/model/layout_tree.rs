@@ -212,23 +212,75 @@ impl LayoutTree {
     /// `sibling` may be in a different layout, in which case `moving_node` and
     /// its subtree change layouts.
     pub fn move_node_after(&mut self, sibling: NodeId, moving_node: NodeId) {
+        self.move_keeping_selection(moving_node, |this| {
+            if sibling.parent(this.map()).is_none() {
+                // Don't attempt to add next to the root node.
+                moving_node.detach(&mut this.tree).push_back(sibling);
+            } else {
+                moving_node.detach(&mut this.tree).insert_after(sibling);
+            }
+            true
+        });
+    }
+
+    /// Moves `moving_node` into `layout` while moving in `direction`.
+    ///
+    /// Following the selection down from the root, the node is placed on the
+    /// near edge of the first container oriented along `direction`. If there
+    /// is none, it is placed after the selected window.
+    pub fn move_node_into_layout(
+        &mut self,
+        layout: LayoutId,
+        moving_node: NodeId,
+        direction: Direction,
+    ) {
         let map = &self.tree.map;
-        let Some(old_parent) = moving_node.parent(map) else {
+        let mut node = self.root(layout);
+        let container = loop {
+            if self.window_at(node).is_some() {
+                break None;
+            }
+            if self.container_kind(node).orientation() == direction.orientation() {
+                break Some(node);
+            }
+            match self.tree.data.selection.local_selection(map, node).or(node.first_child(map)) {
+                Some(next) => node = next,
+                None => break Some(node),
+            }
+        };
+        let Some(container) = container else {
+            self.move_node_after(node, moving_node);
             return;
         };
-        let is_selection =
-            self.tree.data.selection.local_selection(map, old_parent) == Some(moving_node);
-        if sibling.parent(self.map()).is_none() {
-            // Don't attempt to add next to the root node.
-            moving_node.detach(&mut self.tree).push_back(sibling);
-        } else {
-            moving_node.detach(&mut self.tree).insert_after(sibling);
-        }
-        if is_selection {
-            for node in moving_node.ancestors(&self.tree.map).take_while(|&a| a != old_parent) {
-                self.tree.data.selection.select_locally(&self.tree.map, node);
+        self.move_keeping_selection(moving_node, |this| {
+            let detached = moving_node.detach(&mut this.tree);
+            match direction {
+                Direction::Right | Direction::Down => detached.push_front(container),
+                Direction::Left | Direction::Up => detached.push_back(container),
+            };
+            true
+        });
+    }
+
+    /// Runs `move_fn`, which moves `node`, and keeps `node` selected if it was
+    /// selected in its old parent. Returns what `move_fn` returns.
+    fn move_keeping_selection(
+        &mut self,
+        node: NodeId,
+        move_fn: impl FnOnce(&mut Self) -> bool,
+    ) -> bool {
+        let map = &self.tree.map;
+        let Some(old_parent) = node.parent(map) else {
+            return false;
+        };
+        let is_selection = self.tree.data.selection.local_selection(map, old_parent) == Some(node);
+        let moved = move_fn(self);
+        if moved && is_selection {
+            for ancestor in node.ancestors(&self.tree.map).take_while(|&a| a != old_parent) {
+                self.tree.data.selection.select_locally(&self.tree.map, ancestor);
             }
         }
+        moved
     }
 
     #[allow(dead_code)]
@@ -571,19 +623,9 @@ impl LayoutTree {
         moving_node: NodeId,
         direction: Direction,
     ) -> bool {
-        let map = &self.tree.map;
-        let Some(old_parent) = moving_node.parent(map) else {
-            return false;
-        };
-        let is_selection =
-            self.tree.data.selection.local_selection(map, old_parent) == Some(moving_node);
-        let moved = self.move_node_inner(layout, moving_node, direction);
-        if moved && is_selection {
-            for node in moving_node.ancestors(&self.tree.map).take_while(|&a| a != old_parent) {
-                self.tree.data.selection.select_locally(&self.tree.map, node);
-            }
-        }
-        moved
+        self.move_keeping_selection(moving_node, |this| {
+            this.move_node_inner(layout, moving_node, direction)
+        })
     }
 
     fn move_node_inner(
@@ -1142,6 +1184,63 @@ mod tests {
             assert_eq!(None, tree.window_node(layout1, wid));
             assert!(tree.window_node(layout2, wid).is_some());
         }
+    }
+
+    #[test]
+    fn move_node_into_layout_enters_on_the_near_edge() {
+        let mut tree = LayoutTree::new();
+        let layout1 = tree.create_layout();
+        let layout2 = tree.create_layout();
+        let root2 = tree.root(layout2);
+        let moving = tree.add_window_under(layout1, tree.root(layout1), w(1, 1));
+        let a = tree.add_window_under(layout2, root2, w(2, 1));
+        let b = tree.add_window_under(layout2, root2, w(2, 2));
+        tree.select(b);
+        tree.select(moving);
+
+        tree.move_node_into_layout(layout2, moving, Direction::Right);
+        assert_eq!(
+            vec![moving, a, b],
+            root2.children(tree.map()).collect::<Vec<_>>()
+        );
+        assert_eq!(moving, tree.selection(layout2));
+
+        tree.move_node_into_layout(layout2, moving, Direction::Left);
+        assert_eq!(
+            vec![a, b, moving],
+            root2.children(tree.map()).collect::<Vec<_>>()
+        );
+
+        // Nothing is oriented vertically, so the node goes after the selection.
+        let other = tree.add_window_under(layout1, tree.root(layout1), w(1, 2));
+        tree.select(a);
+        tree.move_node_into_layout(layout2, other, Direction::Down);
+        assert_eq!(
+            vec![a, other, b, moving],
+            root2.children(tree.map()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn move_node_into_layout_enters_a_nested_container() {
+        let mut tree = LayoutTree::new();
+        let layout1 = tree.create_layout();
+        let layout2 = tree.create_layout();
+        let root2 = tree.root(layout2);
+        tree.set_container_kind(root2, ContainerKind::Vertical);
+        let moving = tree.add_window_under(layout1, tree.root(layout1), w(1, 1));
+        let row = tree.add_container(root2, ContainerKind::Horizontal);
+        let a = tree.add_window_under(layout2, row, w(2, 1));
+        let b = tree.add_window_under(layout2, row, w(2, 2));
+        let _below = tree.add_window_under(layout2, root2, w(2, 3));
+        tree.select(b);
+
+        tree.move_node_into_layout(layout2, moving, Direction::Right);
+        assert_eq!(vec![moving, a, b], row.children(tree.map()).collect::<Vec<_>>());
+
+        let other = tree.add_window_under(layout1, tree.root(layout1), w(1, 2));
+        tree.move_node_into_layout(layout2, other, Direction::Down);
+        assert_eq!(Some(other), root2.first_child(tree.map()));
     }
 
     #[test]

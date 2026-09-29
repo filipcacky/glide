@@ -840,15 +840,18 @@ impl Reactor {
             }
             Event::Command(Command::Layout(cmd)) => {
                 info!(?cmd);
-                let visible_spaces =
-                    self.screens.iter().flat_map(|screen| screen.space).collect::<Vec<_>>();
+                let visible_screens: Vec<_> = self
+                    .screens
+                    .iter()
+                    .filter_map(|screen| Some((screen.space?, screen.frame)))
+                    .collect();
                 // macOS can temporarily have no main window (for example after
                 // clicking the desktop). Keep keyboard layout commands usable
                 // by targeting the last active screen in that case.
                 let command_space = self
                     .main_window_space()
                     .or_else(|| self.active_screen().and_then(|screen| screen.space));
-                let response = self.layout.handle_command(command_space, &visible_spaces, cmd);
+                let response = self.layout.handle_command(command_space, &visible_screens, cmd);
                 self.handle_layout_response(response);
             }
             Event::Command(Command::Metrics(cmd)) => log::handle_command(cmd),
@@ -2737,6 +2740,59 @@ pub mod tests {
         assert_eq!(
             full_screen,
             apps.windows.get(&WindowId::new(1, 1)).expect("Window was not resized").frame,
+        );
+    }
+
+    #[test]
+    fn it_moves_focus_to_the_physically_adjacent_screen() {
+        let mut apps = Apps::new();
+        let mut reactor = Reactor::new_for_test(LayoutManager::new_for_test());
+        let (raise_manager_tx, mut raise_manager_rx) = mpsc::unbounded_channel();
+        reactor.raise_manager_tx = raise_manager_tx;
+        let size = CGSize::new(1000., 1000.);
+        let main = CGRect::new(CGPoint::new(0., 0.), size);
+        let middle = CGRect::new(CGPoint::new(1000., 0.), size);
+        let right = CGRect::new(CGPoint::new(2000., 0.), size);
+        // The system reports screens in an order unrelated to their position.
+        reactor.handle_event(Event::ScreenParametersChanged {
+            frames: vec![main, right, middle],
+            spaces: vec![
+                Some(SpaceId::new(1)),
+                Some(SpaceId::new(3)),
+                Some(SpaceId::new(2)),
+            ],
+            scale_factors: vec![2.0, 2.0, 2.0],
+            converter: CoordinateConverter::default(),
+            on_screen: Default::default(),
+        });
+
+        let mut windows = make_windows(3);
+        windows[0].frame.origin = CGPoint::new(100., 100.);
+        windows[1].frame.origin = CGPoint::new(1100., 100.);
+        windows[2].frame.origin = CGPoint::new(2100., 100.);
+        reactor.handle_events(apps.make_app_with_opts(1, windows, Some(WindowId::new(1, 1)), true));
+        reactor.handle_event(Event::ApplicationGloballyActivated(1));
+        reactor.handle_event(Event::StartupComplete);
+        apps.simulate_until_quiet(&mut reactor);
+        // Give each screen a selection to move focus to.
+        for (space, idx) in [(3, 3), (2, 2), (1, 1)] {
+            reactor.send_layout_event(LayoutEvent::WindowFocused(
+                vec![SpaceId::new(space)],
+                WindowId::new(1, idx),
+            ));
+        }
+        while raise_manager_rx.try_recv().is_ok() {}
+
+        reactor.handle_event(Event::Command(Command::Layout(LayoutCommand::MoveFocus(
+            Direction::Right,
+        ))));
+        let msg = raise_manager_rx.try_recv().expect("Should have sent a raise request").1;
+        let raise::Event::RaiseRequest(request) = msg else {
+            panic!("Unexpected event: {msg:?}");
+        };
+        assert_eq!(
+            request.focus_window.map(|(wid, _)| wid),
+            Some(WindowId::new(1, 2))
         );
     }
 
