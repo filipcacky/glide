@@ -578,6 +578,50 @@ mod tests {
     }
 
     #[test]
+    fn toggle_window_floating_key_options() {
+        use crate::actor::layout::FloatingFrame;
+        let config = Config::parse(
+            r#"
+            [settings]
+            default_keys = false
+
+            [keys]
+            "Alt + A" = "toggle_window_floating"
+            "Alt + B" = { toggle_window_floating = "last" }
+            "Alt + C" = { toggle_window_floating = { center = { width = 0.5, height = 0.5 } } }
+            "#,
+        )
+        .unwrap();
+        let placement = |key: &str| {
+            let (_, cmd) = config.keys.iter().find(|(hk, _)| hk.to_string() == key).unwrap();
+            match cmd {
+                WmCommand::ReactorCommand(ReactorCommand::Layout(
+                    LayoutCommand::ToggleWindowFloating(placement),
+                )) => *placement,
+                _ => panic!("unexpected command {cmd:?}"),
+            }
+        };
+        assert_eq!(placement("Alt + KeyA"), FloatingFrame::Last);
+        assert_eq!(placement("Alt + KeyB"), FloatingFrame::Last);
+        assert_eq!(
+            placement("Alt + KeyC"),
+            FloatingFrame::Center {
+                width: Proportion::new(0.5).unwrap(),
+                height: Proportion::new(0.5).unwrap(),
+            }
+        );
+        assert!(
+            Config::parse(
+                r#"
+                [keys]
+                "Alt + E" = { toggle_window_floating = { center = { width = 1.5, height = 0.5 } } }
+                "#,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn default_keys_false_excludes_default_bindings() {
         let config = Config::parse(
             r#"

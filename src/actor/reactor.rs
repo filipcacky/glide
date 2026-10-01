@@ -848,7 +848,13 @@ impl Reactor {
                 let command_space = self
                     .main_window_space()
                     .or_else(|| self.active_screen().and_then(|screen| screen.space));
-                let response = self.layout.handle_command(command_space, &visible_spaces, cmd);
+                let screen = self
+                    .screens
+                    .iter()
+                    .find(|screen| screen.space.is_some() && screen.space == command_space)
+                    .map(|screen| screen.frame);
+                let response =
+                    self.layout.handle_command(command_space, screen, &visible_spaces, cmd);
                 self.handle_layout_response(response);
             }
             Event::Command(Command::Metrics(cmd)) => log::handle_command(cmd),
