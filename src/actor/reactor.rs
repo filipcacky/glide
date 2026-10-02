@@ -670,6 +670,21 @@ impl Reactor {
             }
             Event::SpaceChanged(spaces, on_screen) => {
                 let visible_window_order = on_screen.visible.clone();
+                // Windows that were on screen and are now on another screen,
+                // e.g. moved there in Mission Control.
+                let moved: Vec<_> = on_screen
+                    .info
+                    .iter()
+                    .filter(|info| info.layer == 0 && self.visible_windows.contains(&info.id))
+                    .filter_map(|info| {
+                        let wid = *self.window_ids.get(&info.id)?;
+                        let old_frame = self.windows.get(&wid)?.frame_monotonic;
+                        let old_screen = self.best_screen_idx_for_window(&old_frame)?;
+                        let new_screen = self.best_screen_idx_for_window(&info.frame)?;
+                        (old_screen != new_screen)
+                            .then(|| (wid, self.screens[old_screen].space, new_screen))
+                    })
+                    .collect();
                 self.update_complete_window_server_info(on_screen);
                 if spaces.len() != self.screens.len() {
                     warn!(
@@ -685,6 +700,19 @@ impl Reactor {
                 info!("space changed");
                 for (space, screen) in spaces.iter().zip(&mut self.screens) {
                     screen.space = *space;
+                }
+                for (wid, removed, new_screen) in moved {
+                    let added = self.screens[new_screen].space;
+                    if added != removed
+                        && let Some(info) = self.layout_window_info(wid)
+                    {
+                        self.send_layout_event(LayoutEvent::WindowSpaceChanged {
+                            wid,
+                            added,
+                            removed,
+                            info,
+                        });
+                    }
                 }
                 let response = self
                     .screens
@@ -2278,6 +2306,95 @@ pub mod tests {
             reactor.handle_event(event);
         }
         assert_eq!(screen2, apps.windows[&dragged].frame);
+    }
+
+    #[test]
+    fn it_moves_windows_whose_new_screen_was_first_seen_in_a_space_snapshot() {
+        let mut apps = Apps::new();
+        let mut reactor = Reactor::new_for_test(LayoutManager::new_for_test());
+        let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+        let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+        let space1 = SpaceId::new(1);
+        let space2 = SpaceId::new(2);
+        reactor.handle_event(Event::ScreenParametersChanged {
+            frames: vec![screen1, screen2],
+            spaces: vec![Some(space1), Some(space2)],
+            scale_factors: vec![2.0, 2.0],
+            converter: CoordinateConverter::default(),
+            on_screen: Default::default(),
+        });
+        reactor.handle_events(apps.make_app(1, make_windows(2)));
+        reactor.handle_event(Event::StartupComplete);
+        apps.simulate_until_quiet(&mut reactor);
+
+        // Mission Control moves window 1 to screen2. The space change snapshot
+        // reports the new frame before the app does.
+        let moved = WindowId::new(1, 1);
+        let new_frame = CGRect::new(CGPoint::new(1100., 100.), CGSize::new(400., 400.));
+        reactor.handle_event(Event::SpaceChanged(
+            vec![Some(space1), Some(space2)],
+            WindowsOnScreen::new(vec![WindowServerInfo {
+                id: WindowServerId::new(1),
+                pid: 1,
+                layer: 0,
+                frame: new_frame,
+            }]),
+        ));
+        reactor.handle_event(Event::WindowFrameChanged(
+            moved,
+            new_frame,
+            apps.windows[&moved].last_seen_txid,
+            Requested(false),
+            Some(MouseState::Up),
+        ));
+        apps.simulate_until_quiet(&mut reactor);
+
+        assert_eq!(screen2, apps.windows[&moved].frame);
+    }
+
+    #[test]
+    fn it_keeps_windows_in_their_space_when_the_space_moves_screens() {
+        let mut apps = Apps::new();
+        let mut reactor = Reactor::new_for_test(LayoutManager::new_for_test());
+        let screen1 = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
+        let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
+        let space1 = SpaceId::new(1);
+        let space2 = SpaceId::new(2);
+        reactor.handle_event(Event::ScreenParametersChanged {
+            frames: vec![screen1, screen2],
+            spaces: vec![Some(space1), Some(space2)],
+            scale_factors: vec![2.0, 2.0],
+            converter: CoordinateConverter::default(),
+            on_screen: Default::default(),
+        });
+        reactor.handle_events(apps.make_app(1, make_windows(1)));
+        reactor.handle_event(Event::StartupComplete);
+        apps.simulate_until_quiet(&mut reactor);
+
+        // The spaces swap screens, taking the window along.
+        let wid = WindowId::new(1, 1);
+        let frame = apps.windows[&wid].frame;
+        let new_frame = CGRect::new(CGPoint::new(frame.origin.x + 1000., 0.), frame.size);
+        reactor.handle_event(Event::SpaceChanged(
+            vec![Some(space2), Some(space1)],
+            WindowsOnScreen::new(vec![WindowServerInfo {
+                id: WindowServerId::new(1),
+                pid: 1,
+                layer: 0,
+                frame: new_frame,
+            }]),
+        ));
+
+        let windows = |space, screen| {
+            reactor
+                .layout
+                .calculate_layout(space, screen, &reactor.config)
+                .into_iter()
+                .map(|(wid, _)| wid)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(windows(space1, screen2), vec![wid]);
+        assert!(windows(space2, screen1).is_empty());
     }
 
     #[test]
