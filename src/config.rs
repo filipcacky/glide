@@ -23,7 +23,7 @@ use rustc_hash::FxHashMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::actor::wm_controller::WmCommand;
-use crate::model::LayoutKind;
+use crate::model::{LayoutKind, Proportion};
 
 pub fn data_dir() -> PathBuf {
     dirs::home_dir().unwrap().join(".glide")
@@ -226,7 +226,7 @@ pub struct ScrollConfig {
     pub enable: bool,
     pub center_focused_column: CenterMode,
     pub visible_columns: u32,
-    pub column_width_presets: Vec<f64>,
+    pub column_width_presets: Vec<Proportion>,
     pub new_window_in_column: NewWindowPlacement,
     pub scroll_sensitivity: f64,
     pub invert_scroll_direction: bool,
@@ -244,7 +244,7 @@ impl ScrollConfig {
     pub fn validated(mut self) -> Self {
         self.visible_columns = self.visible_columns.clamp(1, 5);
         self.scroll_sensitivity = self.scroll_sensitivity.clamp(0.0, 100.0);
-        self.column_width_presets.retain(|&p| p > 0.0 && p <= 1.0);
+        self.column_width_presets.retain(|p| p.get() > 0.0);
         self
     }
 

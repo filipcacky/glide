@@ -1061,9 +1061,9 @@ impl LayoutManager {
                     let current_proportion = self.tree.proportion(col).unwrap_or(1.0);
                     let next = presets
                         .iter()
-                        .find(|&&p| p > current_proportion + 0.01)
+                        .find(|p| p.get() > current_proportion + 0.01)
                         .or(presets.first())
-                        .copied()
+                        .map(|p| p.get())
                         .unwrap_or(current_proportion);
                     let delta = next - current_proportion;
                     if delta.abs() > 0.001 {
