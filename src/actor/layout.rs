@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use redact::Secret;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tracing::{debug, error, warn};
 
 use crate::actor::app::{WindowId, pid_t};
@@ -27,7 +27,7 @@ use crate::sys::screen::SpaceId;
 
 #[allow(dead_code)]
 #[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", remote = "Self")]
 pub enum LayoutCommand {
     NextLayout,
     PrevLayout,
@@ -40,7 +40,7 @@ pub enum LayoutCommand {
     Group(Orientation),
     Ungroup,
     ToggleFocusFloating,
-    ToggleWindowFloating,
+    ToggleWindowFloating(FloatingFrame),
     ToggleFullscreen,
     Resize {
         #[serde(rename = "direction")]
@@ -57,6 +57,44 @@ pub enum LayoutCommand {
 
 fn default_resize_percent() -> f64 {
     5.0
+}
+
+impl Serialize for LayoutCommand {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        LayoutCommand::serialize(self, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for LayoutCommand {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Also accepts bare names of commands whose options all default.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Command(#[serde(with = "LayoutCommand")] LayoutCommand),
+            Bare(Bare),
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Bare {
+            ToggleWindowFloating,
+        }
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Command(command) => command,
+            Repr::Bare(Bare::ToggleWindowFloating) => {
+                LayoutCommand::ToggleWindowFloating(FloatingFrame::default())
+            }
+        })
+    }
+}
+
+/// Where to place a window toggled to floating.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum FloatingFrame {
+    /// Where the window last floated.
+    #[default]
+    Last,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -153,9 +191,18 @@ impl LayoutCommand {
             | CycleColumnWidth
             | ToggleColumnTabbed => true,
 
-            NextLayout | PrevLayout | MoveFocus(_) | Ascend | Descend | Split(_)
-            | ToggleFocusFloating | ToggleWindowFloating | ToggleFullscreen | ChangeLayoutKind
-            | FocusNext | FocusPrev => false,
+            NextLayout
+            | PrevLayout
+            | MoveFocus(_)
+            | Ascend
+            | Descend
+            | Split(_)
+            | ToggleFocusFloating
+            | ToggleWindowFloating(_)
+            | ToggleFullscreen
+            | ChangeLayoutKind
+            | FocusNext
+            | FocusPrev => false,
         }
     }
 }
@@ -801,7 +848,7 @@ impl LayoutManager {
 
         // ToggleWindowFloating is the only command that works when the space is
         // disabled.
-        if let LayoutCommand::ToggleWindowFloating = &command {
+        if let LayoutCommand::ToggleWindowFloating(_) = &command {
             let Some(wid) = self.focused_window else {
                 return EventResponse::default();
             };
@@ -888,7 +935,7 @@ impl LayoutManager {
 
         match command {
             // Handled above.
-            LayoutCommand::ToggleWindowFloating => unreachable!(),
+            LayoutCommand::ToggleWindowFloating(_) => unreachable!(),
             LayoutCommand::ToggleFocusFloating => unreachable!(),
 
             LayoutCommand::NextLayout => {
@@ -2135,7 +2182,7 @@ mod tests {
         _ = mgr.handle_event(WindowFocused(vec![space], WindowId::new(pid, 1)));
 
         // Make the first window float.
-        _ = mgr.handle_command(Some(space), &[space], ToggleWindowFloating);
+        _ = mgr.handle_command(Some(space), &[space], ToggleWindowFloating(Default::default()));
         let sizes: HashMap<_, _> =
             mgr.calculate_layout(space, screen1, config).into_iter().collect();
         assert_eq!(sizes[&WindowId::new(pid, 2)], rect(0, 0, 60, 120));
@@ -2153,7 +2200,7 @@ mod tests {
         }
 
         // Make the second window float.
-        _ = mgr.handle_command(Some(space), &[space], ToggleWindowFloating);
+        _ = mgr.handle_command(Some(space), &[space], ToggleWindowFloating(Default::default()));
         let sizes: HashMap<_, _> =
             mgr.calculate_layout(space, screen1, config).into_iter().collect();
         assert_eq!(sizes[&WindowId::new(pid, 3)], rect(0, 0, 120, 120));
@@ -2187,7 +2234,7 @@ mod tests {
         _ = mgr.handle_event(WindowFocused(vec![], WindowId::new(pid, 1)));
 
         // Make the first window float.
-        _ = mgr.handle_command(None, &[], ToggleWindowFloating);
+        _ = mgr.handle_command(None, &[], ToggleWindowFloating(Default::default()));
 
         // Enable the space.
         let screen1 = rect(0, 0, 120, 120);
@@ -2245,7 +2292,7 @@ mod tests {
 
         // Float the focused window and re-expose the space. The floating window
         // must not be buried, so no tiled windows are raised over it.
-        _ = mgr.handle_command(Some(space), &[space], ToggleWindowFloating);
+        _ = mgr.handle_command(Some(space), &[space], ToggleWindowFloating(Default::default()));
         let response = mgr.handle_event(SpaceExposed(space, screen1.size));
         assert!(
             response.raise_windows.is_empty()
@@ -2266,7 +2313,7 @@ mod tests {
         _ = mgr.handle_event(SpaceExposed(space, screen1.size));
         _ = mgr.handle_event(WindowsOnScreenUpdated(space, pid, windows.clone()));
         _ = mgr.handle_event(WindowFocused(vec![space], WindowId::new(pid, 5)));
-        _ = mgr.handle_command(Some(space), &[space], ToggleWindowFloating);
+        _ = mgr.handle_command(Some(space), &[space], ToggleWindowFloating(Default::default()));
         _ = mgr.handle_command(Some(space), &[space], ToggleFocusFloating);
         _ = mgr.handle_event(WindowFocused(vec![space], WindowId::new(pid, 2)));
         _ = mgr.handle_command(Some(space), &[space], Split(Orientation::Vertical));
@@ -2316,7 +2363,7 @@ mod tests {
         // Same thing, but unfloat an existing window instead of making a new one.
         _ = mgr.handle_event(WindowFocused(vec![space], WindowId::new(pid, 2)));
         _ = mgr.handle_event(WindowFocused(vec![space], WindowId::new(pid, 5)));
-        _ = mgr.handle_command(Some(space), &[space], ToggleWindowFloating);
+        _ = mgr.handle_command(Some(space), &[space], ToggleWindowFloating(Default::default()));
         assert_eq!(
             vec![
                 (WindowId::new(pid, 1), rect(0, 0, 100, 30)),
@@ -2327,7 +2374,7 @@ mod tests {
             ],
             mgr.layout_sorted(space, screen1),
         );
-        _ = mgr.handle_command(Some(space), &[space], ToggleWindowFloating);
+        _ = mgr.handle_command(Some(space), &[space], ToggleWindowFloating(Default::default()));
 
         // Add a new window when the bottom middle is selected.
         _ = mgr.handle_event(WindowFocused(vec![space], WindowId::new(pid, 3)));
@@ -2654,7 +2701,7 @@ mod tests {
         // Float the first window on space1.
         let floated = WindowId::new(pid, 1);
         _ = mgr.handle_event(WindowFocused(vec![space1], floated));
-        _ = mgr.handle_command(Some(space1), &[space1], ToggleWindowFloating);
+        _ = mgr.handle_command(Some(space1), &[space1], ToggleWindowFloating(Default::default()));
         assert_eq!(BTreeSet::from([floated]), mgr.floating_windows_in_space(space1));
 
         // Drag the floating window onto space2.

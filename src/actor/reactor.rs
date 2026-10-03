@@ -1387,7 +1387,9 @@ pub mod tests {
         reactor.send_layout_event(LayoutEvent::WindowFocused(vec![space], wid));
 
         // First float restores the frame the window had before it was tiled.
-        reactor.handle_event(Event::Command(Command::Layout(ToggleWindowFloating)));
+        reactor.handle_event(Event::Command(Command::Layout(ToggleWindowFloating(
+            Default::default(),
+        ))));
         let initial_frame = CGRect::new(CGPoint::new(100., 100.), CGSize::new(50., 50.));
         let requests = apps.requests();
         assert!(requests.iter().any(|request| {
@@ -1409,10 +1411,14 @@ pub mod tests {
         assert_eq!(reactor.layout.floating_restore_frame(wid), Some(updated_frame));
         assert!(apps.requests().is_empty());
 
-        reactor.handle_event(Event::Command(Command::Layout(ToggleWindowFloating)));
+        reactor.handle_event(Event::Command(Command::Layout(ToggleWindowFloating(
+            Default::default(),
+        ))));
         apps.simulate_until_quiet(&mut reactor);
         assert_eq!(reactor.windows[&wid].frame_monotonic, screen);
-        reactor.handle_event(Event::Command(Command::Layout(ToggleWindowFloating)));
+        reactor.handle_event(Event::Command(Command::Layout(ToggleWindowFloating(
+            Default::default(),
+        ))));
         let requests = apps.requests();
         assert!(requests.iter().any(|request| {
             matches!(request, Request::SetWindowFrame(request_wid, frame, _) if *request_wid == wid && *frame == updated_frame)
@@ -1446,7 +1452,9 @@ pub mod tests {
         apps.simulate_until_quiet(&mut reactor);
         reactor.send_layout_event(LayoutEvent::WindowFocused(vec![space], wid));
 
-        reactor.handle_event(Event::Command(Command::Layout(ToggleWindowFloating)));
+        reactor.handle_event(Event::Command(Command::Layout(ToggleWindowFloating(
+            Default::default(),
+        ))));
         assert!(
             apps.requests().is_empty(),
             "restore should be animated, not written directly"
