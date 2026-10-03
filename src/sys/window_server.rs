@@ -155,15 +155,6 @@ fn make_info(
     })
 }
 
-pub fn get_all_windows_with_layer(layer: i32) -> Vec<WindowServerInfo> {
-    let array = CGWindowListCopyWindowInfo(CGWindowListOption::OptionAll, kCGNullWindowID)
-        .expect("CGWindowListCopyWindowInfo returned NULL");
-    // SAFETY: CGWindowListCopyWindowInfo returns an array of window info dicts.
-    let array: CFRetained<CFArray<CFDictionary<CFString, CFType>>> =
-        unsafe { CFRetained::cast_unchecked(array) };
-    array.iter().filter_map(|win| make_info(win, Some(layer))).collect()
-}
-
 pub fn get_windows(ids: &[WindowServerId]) -> Vec<WindowServerInfo> {
     if ids.is_empty() {
         return Vec::new();

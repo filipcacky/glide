@@ -17,7 +17,7 @@ use crate::actor::{self, reactor, space_manager, wm_controller};
 use crate::collections::HashMap;
 use crate::sys::app::NSRunningApplicationExt;
 use crate::sys::event::MouseState;
-use crate::sys::screen::{NSScreenInfo, ScreenCache, ScreenInfo, SpaceId};
+use crate::sys::screen::{self, NSScreenInfo, ScreenCache, ScreenInfo, SpaceId};
 use crate::sys::window_server::{
     self as sys_ws, SkylightConnection, SkylightNotifier, WindowServerId, WindowsOnScreen,
     kCGSWindowIsInvisible, kCGSWindowIsTerminated, kCGSWindowIsVisible,
@@ -98,6 +98,8 @@ pub enum Event {
     /// Sent by SpaceManager when it needs a fresh window list (e.g. after
     /// toggling a space or exiting expose).
     RequestSpaceRefresh,
+    /// Sent by SpaceManager when the Dock confirms Exposé.
+    ExposeConfirmed,
 }
 
 pub type Sender = actor::Sender<Event>;
@@ -134,6 +136,7 @@ impl WindowServer {
             Event::RegisterWindow(wsid, wid, tx) => {
                 self.skylight_tx.send(SkylightRequest::TrackWindow(wsid, wid, tx));
             }
+            Event::ExposeConfirmed => self.skylight_tx.send(SkylightRequest::FindExposeWindow),
             Event::ScreenParametersChanged(ns_screens) => self.handle_screen_parameters(ns_screens),
             Event::RetryScreenParameters { attempt, screens } => {
                 if !self.screen_config_retry_pending || attempt != self.screen_config_retry_attempt
@@ -305,7 +308,7 @@ struct SkylightWatcherState {
     /// Registered windows (for SkyLight destruction tracking).
     registered_windows: HashMap<WindowServerId, (WindowId, AppThreadHandle)>,
     sm_tx: space_manager::Sender,
-    /// The Dock's overlay window, shown as soon as Exposé starts.
+    /// The Dock's Exposé window.
     expose_window: Option<WindowServerId>,
 }
 
@@ -314,6 +317,7 @@ struct SkylightWatcherState {
 #[derive(Debug)]
 pub enum SkylightRequest {
     TrackWindow(WindowServerId, WindowId, AppThreadHandle),
+    FindExposeWindow,
 }
 
 pub type SkylightSender = actor::Sender<SkylightRequest>;
@@ -323,19 +327,13 @@ impl SkylightWatcher {
     pub fn new(mtm: MainThreadMarker, sm_tx: space_manager::Sender) -> Self {
         Self(Rc::new_cyclic(
             |weak_self: &Weak<RefCell<SkylightWatcherState>>| {
-                let mut connection = SkylightConnection::new(mtm);
-                let expose_window =
-                    find_dock_expose_window().filter(|&wsid| connection.add_window(wsid).is_ok());
-                if expose_window.is_none() {
-                    warn!("Could not track the Dock's Exposé window");
-                }
                 let mut state = SkylightWatcherState {
-                    connection,
+                    connection: SkylightConnection::new(mtm),
                     notifiers: vec![],
                     weak_self: weak_self.clone(),
                     registered_windows: HashMap::default(),
                     sm_tx,
-                    expose_window,
+                    expose_window: None,
                 };
                 state.register_callbacks();
                 RefCell::new(state)
@@ -402,6 +400,16 @@ impl SkylightWatcherState {
                     warn!("Failed to update SkylightConnection window list: {e}");
                 }
             }
+            SkylightRequest::FindExposeWindow => {
+                let found = find_dock_expose_window();
+                if found == self.expose_window {
+                    return;
+                }
+                if let Some(old) = self.expose_window.take() {
+                    _ = self.connection.remove_window(old);
+                }
+                self.expose_window = found.filter(|&wsid| self.connection.add_window(wsid).is_ok());
+            }
         }
     }
 
@@ -421,14 +429,16 @@ impl SkylightWatcherState {
 }
 
 /// The Dock keeps one persistent window at the Dock level and orders it in
-/// when Exposé starts; Exposé adds more on the same level, so take the oldest.
+/// when Exposé starts; Exposé adds more on the same level, so take the oldest
+/// of those covering a whole display.
 fn find_dock_expose_window() -> Option<WindowServerId> {
     let dock =
         NSRunningApplication::runningApplicationsWithBundleIdentifier(ns_string!("com.apple.dock"));
     let dock_pid = dock.iter().next()?.pid();
-    sys_ws::get_all_windows_with_layer(LAYER_DOCK)
+    let displays = screen::display_bounds();
+    sys_ws::get_visible_windows_with_layer(Some(LAYER_DOCK))
         .into_iter()
-        .filter(|w| w.pid == dock_pid)
+        .filter(|w| w.pid == dock_pid && displays.contains(&w.frame))
         .map(|w| w.id)
         .min()
 }
