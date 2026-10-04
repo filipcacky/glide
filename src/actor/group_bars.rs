@@ -50,6 +50,9 @@ pub enum Event {
     Show,
 }
 
+/// How long the bars take to fade out and in around Exposé, in seconds.
+const FADE_DURATION: f64 = 0.2;
+
 pub struct GroupBars {
     config: Arc<Config>,
     rx: Receiver,
@@ -135,11 +138,10 @@ impl GroupBars {
     }
 
     fn set_hidden(&mut self, hidden: bool) {
-        let config = &self.config.settings.group_bars;
-        self.hidden = hidden && config.fade;
-        let alpha = if self.hidden { 0.0 } else { 1.0 };
+        self.hidden = hidden;
+        let alpha = if hidden { 0.0 } else { 1.0 };
         NSAnimationContext::beginGrouping();
-        NSAnimationContext::currentContext().setDuration(config.fade_duration);
+        NSAnimationContext::currentContext().setDuration(FADE_DURATION);
         for indicator in self.indicators.values().flat_map(|i| i.values()) {
             indicator.window.animator().setAlphaValue(alpha);
         }

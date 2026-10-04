@@ -50,10 +50,6 @@ group_bars.inactive_background_color = "#B3B3B3"
 group_bars.border_color = "#4D4D4D"
 # Width of the bar's border (in points).
 group_bars.border_width = 0.5
-# Fade the bars out while Mission Control or App Exposé is active, and how
-# long the fade takes (in seconds). When false, the bars stay visible.
-group_bars.fade = true
-group_bars.fade_duration = 0.2
 
 # Enables the status icon.
 status_icon.enable = true

@@ -322,8 +322,6 @@ pub struct GroupBars {
     pub inactive_background_color: Color,
     pub border_color: Color,
     pub border_width: f64,
-    pub fade: bool,
-    pub fade_duration: f64,
 }
 
 #[derive(
