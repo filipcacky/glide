@@ -92,7 +92,60 @@ impl<'de> Deserialize<'de> for LayoutCommand {
 /// Where to place a window toggled to floating.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq)]
 #[serde(default, deny_unknown_fields)]
-pub struct FloatingFrame {}
+pub struct FloatingFrame {
+    pub position: FloatingPosition,
+    pub size: FloatingSize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum FloatingPosition {
+    /// Where the window last floated.
+    #[default]
+    Last,
+    /// Centered on the screen.
+    Center,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum FloatingSize {
+    /// The size the window last floated at.
+    #[default]
+    Last,
+    /// The size of the window's tile.
+    Current,
+    /// A percentage of the screen's width and height, e.g. `"50%"`.
+    #[serde(untagged)]
+    Percent(#[serde(with = "percent")] f64),
+    /// Percentages of the screen's width and height.
+    #[serde(untagged)]
+    Percents {
+        #[serde(with = "percent")]
+        width: f64,
+        #[serde(with = "percent")]
+        height: f64,
+    },
+}
+
+/// Reads and writes a fraction from 0 to 1 as a percentage string, e.g. `"50%"`.
+mod percent {
+    use serde::de::Error;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(&format_args!("{}%", value * 100.0))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+        String::deserialize(deserializer)?
+            .strip_suffix('%')
+            .and_then(|number| number.parse::<f64>().ok())
+            .filter(|percent| (0.0..=100.0).contains(percent))
+            .map(|percent| percent / 100.0)
+            .ok_or_else(|| D::Error::custom("expected a percentage from 0% to 100%"))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayoutEvent {
@@ -830,13 +883,64 @@ impl LayoutManager {
         EventResponse::default()
     }
 
+    fn floating_frame(
+        &self,
+        wid: WindowId,
+        space: Option<SpaceId>,
+        screen: Option<CGRect>,
+        placement: FloatingFrame,
+    ) -> Option<CGRect> {
+        let last = self.floating_restore_frame(wid);
+        if placement == FloatingFrame::default() {
+            return last;
+        }
+        let placed = || {
+            let screen = screen?;
+            let scaled_screen_size = |width: f64, height: f64| {
+                CGSize::new(screen.size.width * width, screen.size.height * height)
+            };
+            let size = match placement.size {
+                FloatingSize::Last => last?.size,
+                FloatingSize::Current => {
+                    let (_, tile) = self
+                        .tree
+                        .calculate_layout(self.layout(space?), screen, &self.config)
+                        .into_iter()
+                        .find(|(w, _)| *w == wid)?;
+                    tile.size
+                }
+                FloatingSize::Percent(percent) => scaled_screen_size(percent, percent),
+                FloatingSize::Percents { width, height } => scaled_screen_size(width, height),
+            };
+            let size = CGSize::new(
+                size.width.min(screen.size.width),
+                size.height.min(screen.size.height),
+            );
+            let origin = match placement.position {
+                FloatingPosition::Last => {
+                    let origin = last?.origin;
+                    CGPoint::new(
+                        origin.x.clamp(screen.min().x, screen.max().x - size.width),
+                        origin.y.clamp(screen.min().y, screen.max().y - size.height),
+                    )
+                }
+                FloatingPosition::Center => {
+                    let center = screen.mid();
+                    CGPoint::new(center.x - size.width / 2.0, center.y - size.height / 2.0)
+                }
+            };
+            Some(CGRect::new(origin, size))
+        };
+        placed().or(last)
+    }
+
     /// Toggles whether the focused window floats. Unlike other commands, this
     /// works when the space is disabled.
     pub fn toggle_window_floating(
         &mut self,
         space: Option<SpaceId>,
-        _screen: Option<CGRect>,
-        _placement: FloatingFrame,
+        screen: Option<CGRect>,
+        placement: FloatingFrame,
     ) -> EventResponse {
         self.generation += 1;
         let Some(wid) = self.focused_window else {
@@ -847,7 +951,10 @@ impl LayoutManager {
             self.last_floating_focus = None;
             return EventResponse::default();
         }
-        let frame = self.floating_restore_frame(wid);
+        let frame = self.floating_frame(wid, space, screen, placement);
+        if let Some(frame) = frame {
+            self.floating_restore_frames.insert(wid, FloatingRestoreFrame { frame });
+        }
         self.add_floating_window(wid, space);
         self.tree.remove_window(wid);
         self.last_floating_focus = Some(wid);
@@ -2204,6 +2311,66 @@ mod tests {
             ],
             mgr.layout_sorted(space, screen2),
         );
+    }
+
+    #[test]
+    fn floating_window_placement() {
+        use LayoutEvent::*;
+        let space = SpaceId::new(1);
+        let pid = 1;
+        let screen = rect(0, 0, 1000, 800);
+        let float = |size| {
+            let mut mgr = LayoutManager::new_for_test();
+            _ = mgr.handle_event(SpaceExposed(space, screen.size));
+            _ = mgr.handle_event(WindowsOnScreenUpdated(space, pid, make_windows(pid, 2)));
+            _ = mgr.handle_event(WindowFocused(vec![space], WindowId::new(pid, 1)));
+            let placement = FloatingFrame {
+                position: FloatingPosition::Center,
+                size,
+            };
+            mgr.toggle_window_floating(Some(space), Some(screen), placement).frame_overrides
+        };
+        let wid = WindowId::new(pid, 1);
+
+        let half = FloatingSize::Percent(0.5);
+        assert_eq!(float(half), vec![(wid, rect(250, 200, 500, 400))]);
+        // The window's tile is the left half of the screen.
+        assert_eq!(float(FloatingSize::Current), vec![(wid, rect(250, 0, 500, 800))]);
+    }
+
+    #[test]
+    fn floating_window_restores_placed_frame() {
+        use LayoutEvent::*;
+        let space = SpaceId::new(1);
+        let pid = 1;
+        let screen = rect(0, 0, 1000, 800);
+        let wid = WindowId::new(pid, 1);
+        let mut mgr = LayoutManager::new_for_test();
+        _ = mgr.handle_event(SpaceExposed(space, screen.size));
+        _ = mgr.handle_event(WindowsOnScreenUpdated(space, pid, make_windows(pid, 2)));
+        _ = mgr.handle_event(WindowFocused(vec![space], wid));
+        let mut toggle = |placement| {
+            mgr.toggle_window_floating(Some(space), Some(screen), placement).frame_overrides
+        };
+
+        let centered = FloatingFrame {
+            position: FloatingPosition::Center,
+            size: FloatingSize::Percent(0.5),
+        };
+        toggle(centered);
+        toggle(FloatingFrame::default());
+        assert_eq!(
+            toggle(FloatingFrame::default()),
+            vec![(wid, rect(250, 200, 500, 400))]
+        );
+
+        // A larger size at the last position is kept on the screen.
+        toggle(FloatingFrame::default());
+        let larger = FloatingFrame {
+            position: FloatingPosition::Last,
+            size: FloatingSize::Percent(0.8),
+        };
+        assert_eq!(toggle(larger), vec![(wid, rect(200, 160, 800, 640))]);
     }
 
     #[test]
