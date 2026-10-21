@@ -3063,13 +3063,6 @@ pub mod tests {
         reactor.handle_event(Event::ApplicationGloballyActivated(1));
         reactor.handle_event(Event::StartupComplete);
         apps.simulate_until_quiet(&mut reactor);
-        // Give each screen a selection to move focus to.
-        for (space, idx) in [(3, 3), (2, 2), (1, 1)] {
-            reactor.send_layout_event(LayoutEvent::WindowFocused(
-                vec![SpaceId::new(space)],
-                WindowId::new(1, idx),
-            ));
-        }
         while raise_manager_rx.try_recv().is_ok() {}
 
         reactor.handle_event(Event::Command(Command::Layout(LayoutCommand::MoveFocus(
@@ -3122,13 +3115,6 @@ pub mod tests {
         reactor.handle_event(Event::ApplicationGloballyActivated(1));
         reactor.handle_event(Event::StartupComplete);
         apps.simulate_until_quiet(&mut reactor);
-        // Give each screen a selection to move focus to.
-        for (space, idx) in [(2, 2), (1, 1)] {
-            reactor.send_layout_event(LayoutEvent::WindowFocused(
-                vec![SpaceId::new(space)],
-                WindowId::new(1, idx),
-            ));
-        }
         while raise_manager_rx.try_recv().is_ok() {}
 
         reactor.handle_event(Event::Command(Command::Layout(LayoutCommand::MoveFocus(

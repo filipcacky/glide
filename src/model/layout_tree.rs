@@ -1203,6 +1203,26 @@ mod tests {
     }
 
     #[test]
+    fn descend_from_root_lands_on_the_near_edge() {
+        let mut tree = LayoutTree::new();
+        let layout = tree.create_layout();
+        let root = tree.root(layout);
+        assert_eq!(root, tree.descend(root, Direction::Right));
+
+        let a = tree.add_window_under(layout, root, w(1, 1));
+        let col = tree.add_container(root, ContainerKind::Vertical);
+        let b = tree.add_window_under(layout, col, w(1, 2));
+        let c = tree.add_window_under(layout, col, w(1, 3));
+        tree.select(b);
+
+        assert_eq!(a, tree.descend(root, Direction::Right));
+        assert_eq!(b, tree.descend(root, Direction::Left));
+        tree.select(c);
+        assert_eq!(c, tree.descend(root, Direction::Left));
+        assert_eq!(b, tree.descend(root, Direction::Down));
+    }
+
+    #[test]
     fn focus_next_prev_with_wraparound() {
         let mut tree = LayoutTree::new();
         let layout = tree.create_layout();

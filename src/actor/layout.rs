@@ -939,7 +939,7 @@ impl LayoutManager {
                 }
                 .or_else(|| {
                     let layout = self.layout(next_space(direction)?);
-                    Some(self.tree.selection(layout))
+                    Some(self.tree.descend(self.tree.root(layout), direction))
                 });
                 if new_focus.is_some() && is_scroll {
                     self.clear_user_scrolling(space);
@@ -2682,6 +2682,39 @@ mod tests {
         _ = mgr.handle_command(Some(space2), &screens, MoveNode(Direction::Left));
         assert!(windows_in(&mgr, space1, screen1).contains(&moved));
         assert!(!windows_in(&mgr, space2, screen2).contains(&moved));
+    }
+
+    #[test]
+    fn move_focus_to_an_unfocused_screen_focuses_a_window() {
+        use LayoutCommand::*;
+        use LayoutEvent::*;
+        let mut mgr = LayoutManager::new_for_test();
+        let space1 = SpaceId::new(1);
+        let space2 = SpaceId::new(2);
+        let pid = 1;
+
+        // +-----------+-----------+
+        // |  space1   |  space2   |
+        // +-----------+-----------+
+        let screen1 = rect(0, 0, 300, 30);
+        let screen2 = rect(300, 0, 300, 30);
+        let screens = [(space1, screen1), (space2, screen2)];
+        _ = mgr.handle_event(SpaceExposed(space1, screen1.size));
+        _ = mgr.handle_event(SpaceExposed(space2, screen2.size));
+        _ = mgr.handle_event(WindowsOnScreenUpdated(space1, pid, make_windows(pid, 1)));
+        _ = mgr.handle_event(WindowsOnScreenUpdated(
+            space2,
+            pid,
+            vec![
+                (WindowId::new(pid, 2), win_info()),
+                (WindowId::new(pid, 3), win_info()),
+            ],
+        ));
+        _ = mgr.handle_event(WindowFocused(vec![space1], WindowId::new(pid, 1)));
+
+        let response = mgr.handle_command(Some(space1), &screens, MoveFocus(Direction::Right));
+        assert_eq!(Some(WindowId::new(pid, 2)), response.focus_window);
+        assert_eq!(Some(WindowId::new(pid, 2)), mgr.selected_window(space2));
     }
 
     #[test]
