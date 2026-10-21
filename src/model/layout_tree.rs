@@ -420,15 +420,19 @@ impl LayoutTree {
     }
 
     pub fn traverse(&self, from: NodeId, direction: Direction) -> Option<NodeId> {
-        let map = &self.tree.map;
         let node =
             // Keep going up...
-            from.ancestors(map)
+            from.ancestors(&self.tree.map)
             // ...until we can move in the desired direction, then move.
-            .flat_map(|n| self.move_over(n, direction)).next();
+            .flat_map(|n| self.move_over(n, direction)).next()?;
+        Some(self.descend(node, direction))
+    }
+
+    pub fn descend(&self, node: NodeId, direction: Direction) -> NodeId {
+        let map = &self.tree.map;
         // Descend as far down as we can go, keeping close to the direction we're
         // moving from.
-        iter::successors(node, |&node| {
+        iter::successors(Some(node), |&node| {
             if self.tree.data.size.kind(node).orientation() == direction.orientation() {
                 match direction {
                     Direction::Up | Direction::Left => node.last_child(map),
@@ -439,6 +443,7 @@ impl LayoutTree {
             }
         })
         .last()
+        .unwrap()
     }
 
     pub fn focus_next(&self, layout: LayoutId, current: NodeId) -> Option<NodeId> {
