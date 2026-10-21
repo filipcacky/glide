@@ -16,7 +16,7 @@ use crate::config::{Config, NewWindowPlacement, ScrollConfig, WindowRule, Window
 use crate::model::scroll_viewport::ViewportState;
 use crate::model::{
     ContainerKind, Direction, LayoutId, LayoutKind, LayoutTree, NodeId, Orientation,
-    SpaceLayoutMapping,
+    SpaceLayoutMapping, adjacent_screen,
 };
 use crate::sys::app::pid_t;
 use crate::sys::geometry::{CGRectDef, CGRectExt, CGSizeExt};
@@ -888,19 +888,8 @@ impl LayoutManager {
             return EventResponse::default();
         }
 
-        let next_space = |direction| {
-            // Pick another space based on the order in visible_spaces.
-            if visible_spaces.len() <= 1 {
-                return None;
-            }
-            let idx = visible_spaces.iter().enumerate().find(|(_, (s, _))| *s == space)?.0;
-            let idx = match direction {
-                Direction::Left | Direction::Up => idx as i32 - 1,
-                Direction::Right | Direction::Down => idx as i32 + 1,
-            };
-            let idx = idx.rem_euclid(visible_spaces.len() as i32);
-            Some(visible_spaces[idx as usize].0)
-        };
+        let next_space =
+            |direction| adjacent_screen(visible_spaces, space, direction).filter(|&s| s != space);
 
         match command {
             // Handled above.
