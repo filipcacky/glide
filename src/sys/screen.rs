@@ -101,7 +101,7 @@ impl<S: System> ScreenCache<S> {
 
         let screens: Vec<ScreenInfo> = cg_screens
             .iter()
-            .flat_map(|&CGScreenInfo { cg_id, .. }| {
+            .flat_map(|&CGScreenInfo { cg_id, bounds, .. }| {
                 let Some(ns_screen) = ns_screens.iter().find(|s| s.cg_id == cg_id) else {
                     warn!("Can't find NSScreen corresponding to {cg_id:?}");
                     return None;
@@ -109,6 +109,7 @@ impl<S: System> ScreenCache<S> {
                 let converted = converter.convert_rect(ns_screen.visible_frame).unwrap();
                 Some(ScreenInfo {
                     visible_frame: converted,
+                    bounds,
                     id: cg_id,
                     scale_factor: ns_screen.backing_scale_factor,
                 })
@@ -240,6 +241,7 @@ type CGDirectDisplayID = u32;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScreenInfo {
     pub visible_frame: CGRect,
+    pub bounds: CGRect,
     pub id: ScreenId,
     pub scale_factor: f64,
 }

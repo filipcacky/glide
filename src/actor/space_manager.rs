@@ -25,6 +25,7 @@ pub enum Event {
     ScreenParametersChanged {
         screens: Vec<ScreenId>,
         frames: Vec<CGRect>,
+        bounds: Vec<CGRect>,
         spaces: Vec<Option<SpaceId>>,
         scale_factors: Vec<f64>,
         converter: CoordinateConverter,
@@ -146,6 +147,7 @@ impl SpaceManager {
             Event::ScreenParametersChanged {
                 screens: ids,
                 frames,
+                bounds,
                 scale_factors,
                 spaces,
                 converter,
@@ -155,6 +157,7 @@ impl SpaceManager {
                 self.handle_space_changed(&spaces);
                 self.reactor_tx.send(reactor::Event::ScreenParametersChanged {
                     frames: frames.clone(),
+                    bounds,
                     spaces: self.active_spaces(),
                     converter,
                     scale_factors,
@@ -446,6 +449,7 @@ mod tests {
             self.on_event(Event::ScreenParametersChanged {
                 screens: vec![screen],
                 frames: vec![CGRect::ZERO],
+                bounds: vec![CGRect::ZERO],
                 spaces: vec![Some(space)],
                 scale_factors: vec![1.0],
                 converter: CoordinateConverter::default(),
@@ -550,6 +554,7 @@ mod tests {
         h.on_event(Event::ScreenParametersChanged {
             screens: vec![screen(1), screen(2)],
             frames: vec![CGRect::ZERO, CGRect::ZERO],
+            bounds: vec![CGRect::ZERO, CGRect::ZERO],
             spaces: vec![Some(space(10)), Some(space(20))],
             scale_factors: vec![1.0, 1.0],
             converter: CoordinateConverter::default(),
@@ -718,6 +723,7 @@ mod tests {
         h.on_event(Event::ScreenParametersChanged {
             screens: vec![screen(1)],
             frames: vec![CGRect::ZERO],
+            bounds: vec![CGRect::ZERO],
             spaces: vec![Some(space(10))],
             scale_factors: vec![1.0],
             converter: CoordinateConverter::default(),
@@ -783,6 +789,7 @@ mod tests {
         h.on_event(Event::ScreenParametersChanged {
             screens: vec![screen(1)],
             frames: vec![CGRect::ZERO],
+            bounds: vec![CGRect::ZERO],
             spaces: vec![Some(space(10))],
             scale_factors: vec![1.0],
             converter: CoordinateConverter::default(),
@@ -803,6 +810,7 @@ mod tests {
         h.on_event(Event::ScreenParametersChanged {
             screens: vec![screen(1)],
             frames: vec![CGRect::ZERO],
+            bounds: vec![CGRect::ZERO],
             spaces: vec![Some(space(10))],
             scale_factors: vec![1.0],
             converter: CoordinateConverter::default(),

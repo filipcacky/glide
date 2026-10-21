@@ -157,6 +157,7 @@ mod tests {
         let space = SpaceId::new(1);
         reactor.handle_event(ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(space)],
 
             converter: CoordinateConverter::default(),
@@ -220,6 +221,7 @@ mod tests {
         let space = SpaceId::new(1);
         reactor.handle_event(ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(space)],
 
             converter: CoordinateConverter::default(),
@@ -289,6 +291,7 @@ mod tests {
         let space = SpaceId::new(1);
         reactor.handle_event(ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::ZERO, CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::ZERO, CGSize::new(1000., 1000.))],
             spaces: vec![Some(space)],
 
             converter: CoordinateConverter::default(),
@@ -336,6 +339,7 @@ mod tests {
         let space = SpaceId::new(1);
         reactor.handle_event(ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(space)],
 
             converter: CoordinateConverter::default(),

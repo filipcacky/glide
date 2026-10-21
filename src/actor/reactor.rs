@@ -64,12 +64,15 @@ pub enum Event {
     /// first event sent on startup.
     ///
     /// The first vec is the frame for each screen. The main screen is always
-    /// first in the list.
+    /// first in the list. `bounds` holds the full bounds of each screen.
     ///
     /// See the `SpaceChanged` event for an explanation of the other parameters.
     ScreenParametersChanged {
         #[serde_as(as = "Vec<CGRectDef>")]
         frames: Vec<CGRect>,
+        #[serde_as(as = "Vec<CGRectDef>")]
+        #[serde(default)]
+        bounds: Vec<CGRect>,
         spaces: Vec<Option<SpaceId>>,
         scale_factors: Vec<f64>,
         converter: CoordinateConverter,
@@ -308,6 +311,7 @@ struct ResponseContext {
 #[derive(Copy, Clone, Debug)]
 struct Screen {
     frame: CGRect,
+    bounds: CGRect,
     space: Option<SpaceId>,
     scale_factor: f64,
 }
@@ -678,6 +682,7 @@ impl Reactor {
             }
             Event::ScreenParametersChanged {
                 frames,
+                bounds,
                 spaces,
                 converter,
                 scale_factors,
@@ -686,11 +691,23 @@ impl Reactor {
                 info!("screen parameters changed");
                 let visible_window_order = on_screen.visible.clone();
                 self.update_complete_window_server_info(on_screen);
+                // Traces recorded before `bounds` existed don't have it.
+                let bounds = if bounds.is_empty() {
+                    frames.clone()
+                } else {
+                    bounds
+                };
                 self.screens = frames
                     .into_iter()
+                    .zip(bounds)
                     .zip(spaces.clone())
                     .zip(scale_factors)
-                    .map(|((frame, space), scale_factor)| Screen { frame, space, scale_factor })
+                    .map(|(((frame, bounds), space), scale_factor)| Screen {
+                        frame,
+                        bounds,
+                        space,
+                        scale_factor,
+                    })
                     .collect();
                 let response = self
                     .screens
@@ -914,8 +931,11 @@ impl Reactor {
             }
             Event::Command(Command::Layout(cmd)) => {
                 info!(?cmd);
-                let visible_spaces =
-                    self.screens.iter().flat_map(|screen| screen.space).collect::<Vec<_>>();
+                let visible_spaces = self
+                    .screens
+                    .iter()
+                    .flat_map(|screen| Some((screen.space?, screen.bounds)))
+                    .collect::<Vec<_>>();
                 // macOS can temporarily have no main window (for example after
                 // clicking the desktop). Keep keyboard layout commands usable
                 // by targeting the last active screen in that case.
@@ -1422,6 +1442,7 @@ pub mod tests {
         let mut reactor = Reactor::new_for_test(LayoutManager::new_for_test());
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(SpaceId::new(1))],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1454,6 +1475,7 @@ pub mod tests {
             Reactor::new_for_test_with_animation(LayoutManager::new_for_test(), true);
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(SpaceId::new(1))],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1484,6 +1506,7 @@ pub mod tests {
         let wid = WindowId::new(1, 1);
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![screen],
+            bounds: vec![screen],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1540,6 +1563,7 @@ pub mod tests {
         let wid = WindowId::new(1, 1);
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![screen],
+            bounds: vec![screen],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1572,6 +1596,7 @@ pub mod tests {
         let mut reactor = Reactor::new_for_test(LayoutManager::new_for_test());
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(SpaceId::new(1))],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1611,6 +1636,7 @@ pub mod tests {
         let mut reactor = Reactor::new_for_test(LayoutManager::new_for_test());
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(SpaceId::new(1))],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1654,6 +1680,7 @@ pub mod tests {
         let mut reactor = Reactor::new_for_test(LayoutManager::new_for_test());
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(SpaceId::new(1))],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1704,6 +1731,7 @@ pub mod tests {
         let full_screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![full_screen],
+            bounds: vec![full_screen],
             spaces: vec![Some(SpaceId::new(1))],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1727,6 +1755,7 @@ pub mod tests {
         let full_screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![full_screen],
+            bounds: vec![full_screen],
             spaces: vec![Some(SpaceId::new(1))],
             scale_factors: vec![1.0],
             converter: CoordinateConverter::default(),
@@ -1773,6 +1802,7 @@ pub mod tests {
         let full_screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![full_screen],
+            bounds: vec![full_screen],
             spaces: vec![Some(SpaceId::new(1))],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1804,6 +1834,7 @@ pub mod tests {
             .collect::<Vec<_>>();
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![full_screen],
+            bounds: vec![full_screen],
             spaces: vec![None],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1844,6 +1875,7 @@ pub mod tests {
         let space = SpaceId::new(1);
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1855,6 +1887,7 @@ pub mod tests {
 
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 900.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 900.))],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1872,6 +1905,7 @@ pub mod tests {
         let space = SpaceId::new(1);
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1891,6 +1925,7 @@ pub mod tests {
         }];
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 900.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 900.))],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1908,6 +1943,7 @@ pub mod tests {
         let space = SpaceId::new(1);
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1933,6 +1969,7 @@ pub mod tests {
             .collect();
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 900.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 900.))],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1950,6 +1987,7 @@ pub mod tests {
         let space = SpaceId::new(1);
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1975,6 +2013,7 @@ pub mod tests {
         }));
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 900.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 900.))],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -1992,6 +2031,7 @@ pub mod tests {
         let space = SpaceId::new(1);
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -2031,6 +2071,7 @@ pub mod tests {
         let space = SpaceId::new(1);
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -2071,6 +2112,7 @@ pub mod tests {
         let space = SpaceId::new(1);
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -2120,6 +2162,7 @@ pub mod tests {
         let mut reactor = Reactor::new_for_test(LayoutManager::new_for_test());
         reactor.screens = vec![Screen {
             frame: CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.)),
+            bounds: CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.)),
             space: Some(SpaceId::new(1)),
             scale_factor: 2.0,
         }];
@@ -2213,6 +2256,7 @@ pub mod tests {
         let space = SpaceId::new(1);
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -2261,6 +2305,7 @@ pub mod tests {
         let full_screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![full_screen],
+            bounds: vec![full_screen],
             spaces: vec![None],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -2291,6 +2336,7 @@ pub mod tests {
         let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![screen1, screen2],
+            bounds: vec![screen1, screen2],
             spaces: vec![Some(SpaceId::new(1)), Some(SpaceId::new(2))],
             scale_factors: vec![2.0, 2.0],
             converter: CoordinateConverter::default(),
@@ -2322,6 +2368,7 @@ pub mod tests {
         let space2 = SpaceId::new(2);
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![screen1, screen2],
+            bounds: vec![screen1, screen2],
             spaces: vec![Some(space1), Some(space2)],
             scale_factors: vec![2.0, 2.0],
             converter: CoordinateConverter::default(),
@@ -2404,6 +2451,7 @@ pub mod tests {
         let space2 = SpaceId::new(2);
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![screen1, screen2],
+            bounds: vec![screen1, screen2],
             spaces: vec![Some(space1), Some(space2)],
             scale_factors: vec![2.0, 2.0],
             converter: CoordinateConverter::default(),
@@ -2460,6 +2508,7 @@ pub mod tests {
         let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![screen],
+            bounds: vec![screen],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -2531,6 +2580,7 @@ pub mod tests {
         let mut reactor = Reactor::new_for_test(LayoutManager::new_for_test());
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(SpaceId::new(1))],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -2579,6 +2629,7 @@ pub mod tests {
         let mut reactor = Reactor::new_for_test(LayoutManager::new_for_test());
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(SpaceId::new(1))],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -2633,6 +2684,7 @@ pub mod tests {
         let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![screen],
+            bounds: vec![screen],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -2699,6 +2751,7 @@ pub mod tests {
         let full_screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![full_screen],
+            bounds: vec![full_screen],
             spaces: vec![Some(SpaceId::new(1))],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -2741,6 +2794,7 @@ pub mod tests {
         let screen2 = CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.));
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![screen1, screen2],
+            bounds: vec![screen1, screen2],
             spaces: vec![Some(SpaceId::new(1)), Some(SpaceId::new(2))],
             scale_factors: vec![2.0, 2.0],
             converter: CoordinateConverter::default(),
@@ -2824,6 +2878,7 @@ pub mod tests {
         let full_screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![full_screen],
+            bounds: vec![full_screen],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -2857,6 +2912,7 @@ pub mod tests {
 
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![CGRect::ZERO],
+            bounds: vec![CGRect::ZERO],
             spaces: vec![None],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -2864,6 +2920,7 @@ pub mod tests {
         });
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![full_screen],
+            bounds: vec![full_screen],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -2920,6 +2977,7 @@ pub mod tests {
         let full_screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![full_screen],
+            bounds: vec![full_screen],
             spaces: vec![Some(SpaceId::new(1))],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -2939,6 +2997,10 @@ pub mod tests {
         // configurations. Resize events are not sent in this case.
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![
+                full_screen,
+                CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.)),
+            ],
+            bounds: vec![
                 full_screen,
                 CGRect::new(CGPoint::new(1000., 0.), CGSize::new(1000., 1000.)),
             ],
@@ -2977,6 +3039,7 @@ pub mod tests {
         let space = SpaceId::new(1);
         reactor.handle_event(ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -3010,6 +3073,7 @@ pub mod tests {
         let space = SpaceId::new(1);
         reactor.handle_event(ScreenParametersChanged {
             frames: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
+            bounds: vec![CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.))],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -3051,6 +3115,7 @@ pub mod tests {
         let mut reactor = Reactor::new_for_test(LayoutManager::new_for_test());
         reactor.handle_event(ScreenParametersChanged {
             frames: vec![full_screen],
+            bounds: vec![full_screen],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -3107,6 +3172,7 @@ pub mod tests {
         let mut reactor1 = Reactor::new_for_test(LayoutManager::new_for_test());
         reactor1.handle_event(ScreenParametersChanged {
             frames: vec![full_screen],
+            bounds: vec![full_screen],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -3134,6 +3200,7 @@ pub mod tests {
         let mut reactor2 = Reactor::new_for_test(restored_layout);
         reactor2.handle_event(ScreenParametersChanged {
             frames: vec![full_screen],
+            bounds: vec![full_screen],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
@@ -3181,6 +3248,7 @@ pub mod tests {
         let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1000., 1000.));
         reactor.handle_event(Event::ScreenParametersChanged {
             frames: vec![screen],
+            bounds: vec![screen],
             spaces: vec![Some(space)],
             scale_factors: vec![2.0],
             converter: CoordinateConverter::default(),
