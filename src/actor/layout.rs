@@ -991,7 +991,12 @@ impl LayoutManager {
                 if !self.tree.move_node(layout, selection, direction) {
                     if let Some(new_space) = next_space(direction) {
                         let new_layout = self.layout(new_space);
-                        self.tree.move_node_after(self.tree.selection(new_layout), selection);
+                        self.tree.move_node_into_layout(
+                            new_layout,
+                            selection,
+                            direction,
+                            self.scroll_config().visible_columns,
+                        );
                     }
                 }
                 EventResponse {
@@ -2608,9 +2613,9 @@ mod tests {
         );
         assert_eq!(
             vec![
-                // Note that 2 is moved to the right of 3.
-                (WindowId::new(pid, 2), rect(400, 0, 100, 30)),
-                (WindowId::new(pid, 3), rect(300, 0, 100, 30)),
+                // 2 enters on the left edge, next to the screen it came from.
+                (WindowId::new(pid, 2), rect(300, 0, 100, 30)),
+                (WindowId::new(pid, 3), rect(400, 0, 100, 30)),
                 (WindowId::new(pid, 4), rect(500, 0, 100, 30)),
             ],
             mgr.layout_sorted(space2, screen2),
@@ -2621,7 +2626,7 @@ mod tests {
         assert_eq!(
             mgr.handle_command(Some(space2), &screens, MoveFocus(Direction::Right))
                 .focus_window,
-            Some(WindowId::new(pid, 4))
+            Some(WindowId::new(pid, 3))
         );
     }
 
@@ -2715,6 +2720,50 @@ mod tests {
         let response = mgr.handle_command(Some(space1), &screens, MoveFocus(Direction::Right));
         assert_eq!(Some(WindowId::new(pid, 2)), response.focus_window);
         assert_eq!(Some(WindowId::new(pid, 2)), mgr.selected_window(space2));
+    }
+
+    #[test]
+    fn move_node_into_scroll_space_joins_a_column() {
+        use LayoutCommand::*;
+        use LayoutEvent::*;
+        let mut mgr = LayoutManager::new_for_test();
+        mgr.set_config(&config_with_scroll(true, LayoutKind::Scroll));
+        let space1 = SpaceId::new(1);
+        let space2 = SpaceId::new(2);
+        let pid = 1;
+
+        // +-----------+-----------+
+        // |  space1   |  space2   |
+        // +-----------+-----------+
+        let screen1 = rect(0, 0, 1000, 300);
+        let screen2 = rect(1000, 0, 1000, 300);
+        let screens = [(space1, screen1), (space2, screen2)];
+        _ = mgr.handle_event(SpaceExposed(space1, screen1.size));
+        _ = mgr.handle_event(SpaceExposed(space2, screen2.size));
+        _ = mgr.handle_event(WindowsOnScreenUpdated(space1, pid, make_windows(pid, 1)));
+        _ = mgr.handle_event(WindowsOnScreenUpdated(
+            space2,
+            pid,
+            vec![
+                (WindowId::new(pid, 2), win_info()),
+                (WindowId::new(pid, 3), win_info()),
+            ],
+        ));
+        let moved = WindowId::new(pid, 1);
+        _ = mgr.handle_event(WindowFocused(vec![space1, space2], moved));
+        _ = mgr.handle_command(Some(space1), &screens, ChangeLayoutKind);
+        assert_eq!(LayoutKind::Tree, mgr.active_layout_kind(space1));
+
+        _ = mgr.handle_command(Some(space1), &screens, MoveNode(Direction::Right));
+
+        let layout2 = mgr.layout(space2);
+        let node = mgr.tree.window_node(layout2, moved).expect("window should be in space2");
+        let column = mgr.tree.column_of(layout2, node).unwrap();
+        assert_ne!(node, column, "window should be nested in a column");
+        assert_eq!(Some(column), mgr.tree.columns(layout2).first().copied());
+        let frames: HashMap<_, _> = mgr.layout_sorted(space2, screen2).into_iter().collect();
+        let other = frames[&WindowId::new(pid, 2)];
+        assert_eq!(other.size.width, frames[&moved].size.width);
     }
 
     #[test]

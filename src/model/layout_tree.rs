@@ -234,6 +234,115 @@ impl LayoutTree {
         }
     }
 
+    /// Moves `moving_node` into `layout` while moving in `direction`.
+    ///
+    /// Following the selection down from the root, the node is placed on the
+    /// near edge of the first container oriented along `direction`. If there
+    /// is none, it is placed after the selected window.
+    ///
+    /// In a scroll layout, moving left or right adds a new column on the near
+    /// edge, with the width of one of `visible_columns`. Moving up or down
+    /// places the node on the near edge of the selected column.
+    pub fn move_node_into_layout(
+        &mut self,
+        layout: LayoutId,
+        moving_node: NodeId,
+        direction: Direction,
+        visible_columns: u32,
+    ) {
+        if self.is_scroll_layout(layout) {
+            self.move_node_into_scroll_layout(layout, moving_node, direction, visible_columns);
+            return;
+        }
+        let mut node = self.root(layout);
+        while self.window_at(node).is_none()
+            && self.container_kind(node).orientation() != direction.orientation()
+            && let Some(next) = self.remembered_child(node)
+        {
+            node = next;
+        }
+        if self.window_at(node).is_some() {
+            self.move_node_after(node, moving_node);
+            return;
+        }
+        self.move_keeping_selection(moving_node, |this| {
+            attach_on_near_edge(moving_node.detach(&mut this.tree), node, direction);
+        });
+    }
+
+    fn move_node_into_scroll_layout(
+        &mut self,
+        layout: LayoutId,
+        moving_node: NodeId,
+        direction: Direction,
+        visible_columns: u32,
+    ) {
+        let root = self.root(layout);
+        let selected_column = self.remembered_child(root);
+        let weight = 1.0 / visible_columns.max(1) as f32;
+        let is_window = self.window_at(moving_node).is_some();
+        self.move_keeping_selection(moving_node, |this| {
+            let column = match (direction.orientation(), selected_column) {
+                (Orientation::Vertical, Some(column)) if this.window_at(column).is_some() => {
+                    // A column whose other windows were removed is collapsed
+                    // into its last window, so wrap that in a column again.
+                    let map = &this.tree.map;
+                    let was_selected =
+                        this.tree.data.selection.last_selection(map, root) == Some(column);
+                    let new_column = this.tree.mk_node().insert_before(column);
+                    this.tree.data.size.assume_size_of(new_column, column, &this.tree.map);
+                    this.tree.data.size.set_kind(new_column, ContainerKind::Vertical);
+                    column.detach(&mut this.tree).push_back(new_column).finish();
+                    if was_selected {
+                        this.tree.data.selection.select_locally(&this.tree.map, column);
+                        this.tree.data.selection.select_locally(&this.tree.map, new_column);
+                    }
+                    new_column
+                }
+                (Orientation::Vertical, Some(column)) => column,
+                // A container moving sideways becomes a column itself.
+                _ if !is_window => {
+                    let detached = moving_node.detach(&mut this.tree);
+                    let column = attach_on_near_edge(detached, root, direction);
+                    this.tree.data.size.set_weight(column, weight, &this.tree.map);
+                    return;
+                }
+                _ => {
+                    let column = match direction {
+                        Direction::Right | Direction::Down => this.tree.mk_node().push_front(root),
+                        Direction::Left | Direction::Up => this.tree.mk_node().push_back(root),
+                    };
+                    this.tree.data.size.set_kind(column, ContainerKind::Vertical);
+                    this.tree.data.size.set_weight(column, weight, &this.tree.map);
+                    column
+                }
+            };
+            attach_on_near_edge(moving_node.detach(&mut this.tree), column, direction);
+        });
+    }
+
+    /// Unlike `local_selection`, this follows the selection below a selected
+    /// container.
+    fn remembered_child(&self, node: NodeId) -> Option<NodeId> {
+        let map = &self.tree.map;
+        self.tree.data.selection.last_selection(map, node).or(node.first_child(map))
+    }
+
+    /// Does nothing if `node` has no parent.
+    fn move_keeping_selection(&mut self, node: NodeId, move_fn: impl FnOnce(&mut Self)) {
+        let map = &self.tree.map;
+        let Some(old_parent) = node.parent(map) else {
+            return;
+        };
+        let is_selection = self.tree.data.selection.local_selection(map, old_parent) == Some(node);
+        move_fn(self);
+        if is_selection {
+            for ancestor in node.ancestors(&self.tree.map).take_while(|&a| a != old_parent) {
+                self.tree.data.selection.select_locally(&self.tree.map, ancestor);
+            }
+        }
+    }
+
     #[allow(dead_code)]
     pub fn add_windows_if_missing(
         &mut self,
@@ -1091,6 +1200,18 @@ impl tree::Observer for Components {
     }
 }
 
+fn attach_on_near_edge(
+    node: tree::DetachedNode<'_, Components>,
+    parent: NodeId,
+    direction: Direction,
+) -> NodeId {
+    match direction {
+        Direction::Right | Direction::Down => node.push_front(parent),
+        Direction::Left | Direction::Up => node.push_back(parent),
+    }
+    .finish()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1203,6 +1324,96 @@ mod tests {
     }
 
     #[test]
+    fn move_node_into_layout_enters_on_the_near_edge() {
+        let mut tree = LayoutTree::new();
+        let layout1 = tree.create_layout();
+        let layout2 = tree.create_layout();
+        let root2 = tree.root(layout2);
+        let moving = tree.add_window_under(layout1, tree.root(layout1), w(1, 1));
+        let a = tree.add_window_under(layout2, root2, w(2, 1));
+        let b = tree.add_window_under(layout2, root2, w(2, 2));
+        tree.select(b);
+        tree.select(moving);
+
+        tree.move_node_into_layout(layout2, moving, Direction::Right, 2);
+        tree.assert_children_are([moving, a, b], root2);
+        assert_eq!(moving, tree.selection(layout2));
+
+        tree.move_node_into_layout(layout2, moving, Direction::Left, 2);
+        tree.assert_children_are([a, b, moving], root2);
+
+        // Nothing is oriented vertically, so the node goes after the selection.
+        let other = tree.add_window_under(layout1, tree.root(layout1), w(1, 2));
+        tree.select(a);
+        tree.move_node_into_layout(layout2, other, Direction::Down, 2);
+        tree.assert_children_are([a, other, b, moving], root2);
+    }
+
+    #[test]
+    fn move_node_into_layout_enters_a_nested_container() {
+        let mut tree = LayoutTree::new();
+        let layout1 = tree.create_layout();
+        let layout2 = tree.create_layout();
+        let root2 = tree.root(layout2);
+        tree.set_container_kind(root2, ContainerKind::Vertical);
+        let moving = tree.add_window_under(layout1, tree.root(layout1), w(1, 1));
+        let row = tree.add_container(root2, ContainerKind::Horizontal);
+        let a = tree.add_window_under(layout2, row, w(2, 1));
+        let b = tree.add_window_under(layout2, row, w(2, 2));
+        let below = tree.add_window_under(layout2, root2, w(2, 3));
+        tree.select(b);
+
+        tree.move_node_into_layout(layout2, moving, Direction::Right, 2);
+        tree.assert_children_are([moving, a, b], row);
+
+        let other = tree.add_window_under(layout1, tree.root(layout1), w(1, 2));
+        tree.move_node_into_layout(layout2, other, Direction::Down, 2);
+        tree.assert_children_are([other, row, below], root2);
+    }
+
+    #[test]
+    fn move_node_into_layout_follows_the_selection() {
+        let mut tree = LayoutTree::new();
+        let layout1 = tree.create_layout();
+        let layout2 = tree.create_layout();
+        let root2 = tree.root(layout2);
+        tree.set_container_kind(root2, ContainerKind::Vertical);
+        let moving = tree.add_window_under(layout1, tree.root(layout1), w(1, 1));
+        let row1 = tree.add_container(root2, ContainerKind::Horizontal);
+        let a = tree.add_window_under(layout2, row1, w(2, 1));
+        let row2 = tree.add_container(root2, ContainerKind::Horizontal);
+        let b = tree.add_window_under(layout2, row2, w(2, 2));
+        tree.select(b);
+
+        tree.move_node_into_layout(layout2, moving, Direction::Right, 2);
+        tree.assert_children_are([a], row1);
+        tree.assert_children_are([moving, b], row2);
+    }
+
+    #[test]
+    fn move_node_into_layout_follows_a_selected_container() {
+        let mut tree = LayoutTree::new();
+        let layout1 = tree.create_layout();
+        let layout2 = tree.create_layout();
+        let root2 = tree.root(layout2);
+        let moving = tree.add_window_under(layout1, tree.root(layout1), w(1, 1));
+        tree.add_window_under(layout2, root2, w(2, 1));
+        let c = tree.add_container(root2, ContainerKind::Horizontal);
+        let p = tree.add_window_under(layout2, c, w(2, 2));
+        let d = tree.add_container(c, ContainerKind::Vertical);
+        let r = tree.add_window_under(layout2, d, w(2, 3));
+        let s = tree.add_window_under(layout2, d, w(2, 4));
+        tree.select(r);
+        tree.ascend_selection(layout2);
+        tree.ascend_selection(layout2);
+        assert_eq!(c, tree.selection(layout2));
+
+        tree.move_node_into_layout(layout2, moving, Direction::Down, 2);
+        tree.assert_children_are([p, d], c);
+        tree.assert_children_are([moving, r, s], d);
+    }
+
+    #[test]
     fn descend_from_root_lands_on_the_near_edge() {
         let mut tree = LayoutTree::new();
         let layout = tree.create_layout();
@@ -1220,6 +1431,58 @@ mod tests {
         tree.select(c);
         assert_eq!(c, tree.descend(root, Direction::Left));
         assert_eq!(b, tree.descend(root, Direction::Down));
+    }
+
+    #[test]
+    fn move_node_into_layout_sideways_into_scroll_adds_a_column() {
+        let mut tree = LayoutTree::new();
+        let layout1 = tree.create_layout();
+        let layout2 = tree.create_scroll_layout();
+        let root2 = tree.root(layout2);
+        let moving = tree.add_window_under(layout1, tree.root(layout1), w(1, 1));
+        let a = tree.add_window_to_scroll_column_with_visible(layout2, w(2, 1), true, 2);
+        let b = tree.add_window_to_scroll_column_with_visible(layout2, w(2, 2), true, 2);
+        let col_a = tree.column_of(layout2, a).unwrap();
+        let col_b = tree.column_of(layout2, b).unwrap();
+
+        tree.move_node_into_layout(layout2, moving, Direction::Right, 2);
+        let col = tree.column_of(layout2, moving).unwrap();
+        assert_ne!(moving, col);
+        tree.assert_children_are([col, col_a, col_b], root2);
+        tree.assert_children_are([moving], col);
+        assert_eq!(ContainerKind::Vertical, tree.container_kind(col));
+        assert_eq!(0.5, tree.tree.data.size.weight(col));
+
+        tree.move_node_into_layout(layout1, moving, Direction::Left, 2);
+        tree.move_node_into_layout(layout2, moving, Direction::Left, 2);
+        let col = tree.column_of(layout2, moving).unwrap();
+        tree.assert_children_are([col_a, col_b, col], root2);
+    }
+
+    #[test]
+    fn move_node_into_layout_vertically_into_scroll_joins_the_selected_column() {
+        let mut tree = LayoutTree::new();
+        let layout1 = tree.create_layout();
+        let layout2 = tree.create_scroll_layout();
+        let root2 = tree.root(layout2);
+        let moving = tree.add_window_under(layout1, tree.root(layout1), w(1, 1));
+        let a = tree.add_window_to_scroll_column_with_visible(layout2, w(2, 1), true, 2);
+        let b = tree.add_window_to_scroll_column_with_visible(layout2, w(2, 2), true, 2);
+        let col_a = tree.column_of(layout2, a).unwrap();
+        let col_b = tree.column_of(layout2, b).unwrap();
+        tree.select(b);
+
+        tree.move_node_into_layout(layout2, moving, Direction::Down, 2);
+        tree.assert_children_are([moving, b], col_b);
+
+        // Moving the window out leaves b alone, which collapses its column.
+        tree.move_node_into_layout(layout1, moving, Direction::Up, 2);
+        assert_eq!(Some(root2), b.parent(tree.map()));
+        tree.move_node_into_layout(layout2, moving, Direction::Up, 2);
+        let col = tree.column_of(layout2, b).unwrap();
+        tree.assert_children_are([col_a, col], root2);
+        tree.assert_children_are([b, moving], col);
+        assert_eq!(b, tree.selection(layout2));
     }
 
     #[test]
