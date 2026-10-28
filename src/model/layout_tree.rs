@@ -28,12 +28,39 @@ pub enum LayoutKind {
     Scroll,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
+#[serde(from = "SavedLayoutTree")]
 pub struct LayoutTree {
+    tree: Tree<Components>,
+}
+
+/// The serialized form of [`LayoutTree`], which stores the layouts next to the
+/// tree.
+#[derive(Deserialize)]
+struct SavedLayoutTree {
     tree: Tree<Components>,
     layout_roots: slotmap::SlotMap<LayoutId, OwnedNode>,
     #[serde(default)]
     layout_kinds: slotmap::SecondaryMap<LayoutId, LayoutKind>,
+}
+
+impl From<SavedLayoutTree> for LayoutTree {
+    fn from(mut saved: SavedLayoutTree) -> Self {
+        saved.tree.data.layout_roots = saved.layout_roots;
+        saved.tree.data.layout_kinds = saved.layout_kinds;
+        LayoutTree { tree: saved.tree }
+    }
+}
+
+impl Serialize for LayoutTree {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("LayoutTree", 3)?;
+        state.serialize_field("tree", &self.tree)?;
+        state.serialize_field("layout_roots", &self.tree.data.layout_roots)?;
+        state.serialize_field("layout_kinds", &self.tree.data.layout_kinds)?;
+        state.end()
+    }
 }
 
 slotmap::new_key_type! {
@@ -44,8 +71,6 @@ impl LayoutTree {
     pub fn new() -> LayoutTree {
         LayoutTree {
             tree: Tree::with_observer(Components::default()),
-            layout_roots: Default::default(),
-            layout_kinds: Default::default(),
         }
     }
 
@@ -66,27 +91,27 @@ impl LayoutTree {
 
     fn create_layout_with_kind(&mut self, kind: LayoutKind, root_kind: ContainerKind) -> LayoutId {
         let root = OwnedNode::new_root_in(&mut self.tree, "layout_root");
-        let id = self.layout_roots.insert(root);
-        self.layout_kinds.insert(id, kind);
-        self.tree.data.size.set_kind(self.layout_roots[id].id(), root_kind);
+        let id = self.tree.data.layout_roots.insert(root);
+        self.tree.data.layout_kinds.insert(id, kind);
+        self.tree.data.size.set_kind(self.tree.data.layout_roots[id].id(), root_kind);
         id
     }
 
     pub fn remove_layout(&mut self, layout: LayoutId) {
-        self.layout_roots.remove(layout).unwrap().remove(&mut self.tree);
-        self.layout_kinds.remove(layout);
+        self.tree.data.layout_roots.remove(layout).unwrap().remove(&mut self.tree);
+        self.tree.data.layout_kinds.remove(layout);
     }
 
     pub fn layouts(&self) -> impl ExactSizeIterator<Item = LayoutId> {
-        self.layout_roots.keys()
+        self.tree.data.layout_roots.keys()
     }
 
     pub fn root(&self, layout: LayoutId) -> NodeId {
-        self.layout_roots[layout].id()
+        self.tree.data.layout_roots[layout].id()
     }
 
     pub fn layout_kind(&self, layout: LayoutId) -> LayoutKind {
-        self.layout_kinds.get(layout).copied().unwrap_or_default()
+        self.tree.data.layout_kinds.get(layout).copied().unwrap_or_default()
     }
 
     pub fn is_scroll_layout(&self, layout: LayoutId) -> bool {
@@ -95,9 +120,9 @@ impl LayoutTree {
 
     /// Returns true if `node` is the root node of a scroll layout.
     fn is_scroll_root(&self, node: NodeId) -> bool {
-        for (layout_id, &kind) in &self.layout_kinds {
+        for (layout_id, &kind) in &self.tree.data.layout_kinds {
             if kind == LayoutKind::Scroll
-                && self.layout_roots.get(layout_id).map(|r| r.id()) == Some(node)
+                && self.tree.data.layout_roots.get(layout_id).map(|r| r.id()) == Some(node)
             {
                 return true;
             }
@@ -174,11 +199,11 @@ impl LayoutTree {
     }
 
     pub fn clone_layout(&mut self, layout: LayoutId) -> LayoutId {
-        let source_root = self.layout_roots[layout].id();
+        let source_root = self.tree.data.layout_roots[layout].id();
         let cloned = source_root.deep_copy(&mut self.tree).make_root("layout_root");
         let cloned_root = cloned.id();
-        let dest_layout = self.layout_roots.insert(cloned);
-        self.layout_kinds.insert(dest_layout, self.layout_kind(layout));
+        let dest_layout = self.tree.data.layout_roots.insert(cloned);
+        self.tree.data.layout_kinds.insert(dest_layout, self.layout_kind(layout));
         self.print_tree(layout);
         for (src, dest) in iter::zip(
             source_root.traverse_preorder(&self.tree.map),
@@ -732,9 +757,9 @@ impl LayoutTree {
                 new_parent
             } else {
                 // New root.
-                let layout_root = self.layout_roots.get_mut(layout).unwrap();
-                layout_root.replace(self.tree.mk_node()).push_back(layout_root.id());
-                layout_root.id()
+                let new_root = self.root(layout).wrap_root(&mut self.tree);
+                *self.tree.data.layout_roots[layout] = new_root;
+                new_root
             };
             self.tree.data.selection.select_locally(&self.tree.map, node);
             new_parent
@@ -997,7 +1022,7 @@ impl LayoutTree {
 
 impl Drop for LayoutTree {
     fn drop(&mut self) {
-        for (_, node) in self.layout_roots.drain() {
+        for (_, node) in self.tree.data.layout_roots.drain() {
             // It's okay to skip removing these, since we're dropping the map too.
             mem::forget(node);
         }
@@ -1006,12 +1031,19 @@ impl Drop for LayoutTree {
 
 /// The components of our data model own slices of information attached to every
 /// node.
+///
+/// They also own the root and kind of each layout.
 #[derive(Default, Serialize, Deserialize)]
 struct Components {
     selection: Selection,
     #[serde(alias = "layout")]
     size: Size,
     window: Window,
+    // The layouts are serialized by `LayoutTree`.
+    #[serde(skip)]
+    layout_roots: slotmap::SlotMap<LayoutId, OwnedNode>,
+    #[serde(skip)]
+    layout_kinds: slotmap::SecondaryMap<LayoutId, LayoutKind>,
 }
 
 #[derive(Copy, Clone)]

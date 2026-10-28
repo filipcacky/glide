@@ -152,6 +152,15 @@ impl NodeId {
         DetachedNode { id: self, tree }
     }
 
+    /// Inserts a new root above this one and returns it.
+    #[track_caller]
+    pub(super) fn wrap_root<O: Observer>(self, tree: &mut Tree<O>) -> NodeId {
+        assert!(self.parent(&tree.map).is_none(), "node is not a root");
+        let new_root = tree.mk_node().id;
+        UnattachedNode { id: self, tree }.push_back(new_root);
+        new_root
+    }
+
     #[track_caller]
     pub fn parent(self, map: &NodeMap) -> Option<NodeId> {
         map[self].parent
@@ -963,6 +972,16 @@ mod tests {
         t.other_root_node.remove(&mut t.tree);
         t.assert_events_are([RemovedFromForest(t.other_root)]);
         assert!(!t.tree.map.map.contains_key(t.other_root));
+    }
+
+    #[test]
+    fn wrap_root() {
+        let mut t = TestTree::new();
+
+        let new_root = t.other_root.wrap_root(&mut t.tree);
+        *t.other_root_node = new_root;
+        t.assert_children_are([t.other_root], new_root);
+        t.assert_events_are([AddedToForest(new_root), AddedToParent(t.other_root)]);
     }
 
     #[test]
