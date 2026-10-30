@@ -45,6 +45,7 @@ pub enum Event {
     SpaceDisabled(SpaceId),
     GlobalDisabled,
     ConfigChanged(Arc<Config>),
+    SetHidden(bool),
 }
 
 pub struct GroupBars {
@@ -54,6 +55,7 @@ pub struct GroupBars {
     indicators: HashMap<SpaceId, HashMap<NodeId, Indicator>>,
     coordinate_converter: CoordinateConverter,
     active_spaces: Vec<Option<SpaceId>>,
+    hidden: bool,
 }
 
 struct Indicator {
@@ -80,6 +82,7 @@ impl GroupBars {
             indicators: HashMap::default(),
             coordinate_converter: CoordinateConverter::default(),
             active_spaces: Vec::new(),
+            hidden: false,
         }
     }
 
@@ -124,6 +127,15 @@ impl GroupBars {
             Event::GlobalDisabled => {
                 self.indicators.clear();
             }
+            Event::SetHidden(hidden) => self.set_hidden(hidden),
+        }
+    }
+
+    fn set_hidden(&mut self, hidden: bool) {
+        self.hidden = hidden;
+        let alpha = if hidden { 0.0 } else { 1.0 };
+        for indicator in self.indicators.values().flat_map(|i| i.values()) {
+            indicator.window.setAlphaValue(alpha);
         }
     }
 
@@ -175,6 +187,9 @@ impl GroupBars {
             }));
             let window = make_indicator_window(self.mtm);
             window.setContentView(Some(view.view()));
+            if self.hidden {
+                window.setAlphaValue(0.0);
+            }
             Indicator { view, window }
         });
         if let Some(frame) = self.coordinate_converter.convert_rect(group.indicator_frame) {
